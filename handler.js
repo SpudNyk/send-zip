@@ -1,68 +1,22 @@
 import express from 'express';
 import jp from 'fs-jetpack';
-import ZipStream from 'node-stream-zip';
 import he from 'he';
 import pm from 'path';
 import wrap from './async-handler';
 import send from 'send';
+import { extract, open, entry } from './zip';
 
-const zipReady = zip => {
-    return new Promise((resolve, reject) => {
-        const handleError = err => {
-            reject(err);
-        };
-
-        zip.once('ready', () => {
-            zip.off('error', handleError);
-            resolve(zip);
-        });
-    });
-};
-
-const normPath = path => path.replace('\\', '/');
-
-const zipEntry = (zip, name) => {
-    return new Promise((resolve, reject) => {
-        const find = normPath(name);
-        const handleError = err => {
-            reject(err);
-        };
-
-        const handleEntry = entry => {
-            if (normPath(entry.name) === find) {
-                zip.off('ready', handleNotFound);
-                zip.off('error', handleError);
-                resolve(entry);
-            }
-        };
-
-        const handleNotFound = () => {
-            zip.off('error', handleError);
-            resolve(undefined);
-        };
-        zip.on('error', handleError);
-        zip.on('ready', handleNotFound);
-        zip.on('entry', handleEntry);
-    });
-};
-
-const zipExtract = (zip, entry, dest) => {
-    return new Promise((resolve, reject) => {
-        zip.extract(entry, dest, err => {
-            console.log(`Extracting: ${entry.name}`);
-            if (err) {
-                reject(err);
-            } else {
-                resolve(entry);
-            }
-        });
-    });
-};
-
-const sendFromZip = async (zipFile, contents, path, req, res) => {
+const sendFromZip = async (zipFile, contents, path, req, res, depth = 0) => {
     if (path === '' || path.endsWith('/')) {
         // a directory try sending default
-        return sendFromZip(zipFile, contents, path + 'index.html', req, res);
+        return sendFromZip(
+            zipFile,
+            contents,
+            path + 'index.html',
+            req,
+            res,
+            depth
+        );
     }
     const file = jp.cwd(contents, path);
     const exists = await file.existsAsync('.');
@@ -74,17 +28,15 @@ const sendFromZip = async (zipFile, contents, path, req, res) => {
         return;
     }
 
-    const zip = new ZipStream({
-        file: zipFile
-    });
-    const entry = await zipEntry(zip, path);
-    if (!entry) {
+    const zip = open(zipFile);
+    const zipEntry = await entry(zip, path, depth);
+    if (!zipEntry) {
         zip.close();
         res.sendStatus(404);
         return;
     }
 
-    if (entry.isDirectory) {
+    if (zipEntry.isDirectory) {
         res.redirect(path + '/');
         zip.close();
         return;
@@ -93,7 +45,7 @@ const sendFromZip = async (zipFile, contents, path, req, res) => {
         if (!(await file.existsAsync('.'))) {
             // ensure directory exists
             await file.dirAsync('..');
-            await zipExtract(zip, entry, file.path());
+            await extract(zip, zipEntry, file.path());
         }
         zip.close();
         // send the file
@@ -117,7 +69,8 @@ const zipContentHandler = mount =>
                 mount.path('contents', name),
                 path,
                 req,
-                res
+                res,
+                1
             );
         }
         res.send(404);
@@ -169,7 +122,6 @@ const listHandler = mount =>
     });
 
 export default dataDir => {
-    console.log('Instantiating router');
     const mount = jp.cwd(dataDir);
 
     const router = express.Router();
