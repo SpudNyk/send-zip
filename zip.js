@@ -118,6 +118,9 @@ export const extract = (zip, entry, dest) => {
 
 export const ready = zip => {
     return new Promise((resolve, reject) => {
+        if (zip.ready) {
+            resolve(zip);
+        }
         const handleError = err => {
             cleanup();
             reject(err);
@@ -141,3 +144,22 @@ export const open = (file, options) =>
         storeEntries: false,
         ...options
     });
+
+const swallow = () => {};
+
+export const close = (zip, swallowErrors = true) => {
+    return new Promise((resolve, reject) => {
+        // closing while entries are still reading (before 'ready') can cause an error
+        // so we swallow errors here
+        if (swallowErrors) {
+            zip.on('error', swallow);
+        }
+        zip.close(err => {
+            if (!swallowErrors && err) {
+                reject(err);
+            } else {
+                resolve();
+            }
+        });
+    });
+};
